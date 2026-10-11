@@ -120,8 +120,6 @@ Open a serial terminal on the ST-LINK virtual COM port (USART2) to see logs such
 
 ## 7. Testing and Results
 
-_Fill in with your own measurements. Suggested items:_
-
 - Servo response time from tilt to movement (sampling is 100 ms, so expect up to that delay).
 - Goal detection reliability in dim and bright rooms (log the LDR counts and baseline with the `goal` log level set to DBG).
 - Score persistence: save a score, power-cycle, confirm it is still listed.
