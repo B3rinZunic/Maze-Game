@@ -1,0 +1,211 @@
+/*
+ * nucleo_f411re — Maze Game overlay
+ *
+ *   SSD1306 OLED ........ I2C1  (PB8 SCL / PB9 SDA)
+ *   MPU6050 IMU ......... I2C2  (PB10 SCL / PB3 SDA)
+ *   Servo 1 ............. TIM3_CH1 / PB4   (20 ms frame, 1.1-1.9 ms pulse)
+ *   Servo 2 ............. TIM4_CH1 / PB6
+ *   Buttons 1/2/3 ...... PB1 / PB2 / PB13  (to GND, internal pull-up)
+ *   Goal sensor ........ photoresistor divider on ADC1_IN0 / PA0 (Arduino A0)
+ *   Score storage ...... top 256 KB of flash (ZMS, 2 x 128 KB sectors)
+ */
+
+#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+
+/ {
+	chosen {
+		zephyr,display = &ssd1306;
+	};
+
+	/* Names the photoresistor channel for ADC_DT_SPEC_GET_BY_IDX() in goal.c. */
+	zephyr,user {
+		io-channels = <&adc1 0>;
+	};
+
+	/*
+	 * The three game buttons, delivered through the input subsystem
+	 * (CONFIG_INPUT_GPIO_KEYS). One INPUT_CALLBACK_DEFINE in the game
+	 * service turns these codes into game events. INPUT_BTN_0..2 are
+	 * contiguous (0x100..0x102); INPUT_KEY_0 is 11 and not adjacent to
+	 * KEY_1/2/3, so BTN_* is the tidy choice. Keep in sync with game.c
+	 * (CODE_PREV/NEXT/OK).
+	 */
+	buttons {
+		compatible = "gpio-keys";
+
+		btn_prev: button_0 {
+			label = "PREV";
+			gpios = <&gpiob 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			zephyr,code = <INPUT_BTN_0>;
+		};
+
+		/* PB2 is also the SoC BOOT1 pin. Harmless on a Nucleo (BOOT0 is
+		 * jumpered low, so BOOT1 is don't-care), but if boot ever misbehaves
+		 * with a button held, this is the one to move. */
+		btn_next: button_1 {
+			label = "NEXT";
+			gpios = <&gpiob 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			zephyr,code = <INPUT_BTN_1>;
+		};
+
+		btn_ok: button_2 {
+			label = "OK";
+			gpios = <&gpiob 13 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			zephyr,code = <INPUT_BTN_2>;
+		};
+	};
+};
+
+/*
+ * The board's on-board user button is on PC13, which shares STM32 EXTI line 13
+ * with btn_ok (PB13) — only one pin per line number can hold the interrupt.
+ * The game doesn't use sw0, so disable it and give EXTI13 to PB13.
+ */
+&user_button {
+	status = "disabled";
+};
+
+/ {
+
+	/*
+	 * SG90-class servos: 20 ms frame, positioned by a ~1-2 ms pulse.
+	 * Kept a touch inside the datasheet ends (1.1-1.9 ms) to avoid buzzing
+	 * at the mechanical limits of the maze gimbal.
+	 */
+	servo1: servo1 {
+		compatible = "pwm-servo";
+		pwms = <&pwm3 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		min-pulse = <PWM_USEC(1100)>;
+		max-pulse = <PWM_USEC(1900)>;
+	};
+
+	servo2: servo2 {
+		compatible = "pwm-servo";
+		pwms = <&pwm4 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		min-pulse = <PWM_USEC(1100)>;
+		max-pulse = <PWM_USEC(1900)>;
+	};
+};
+
+/*
+ * TIM3 counter clock is 96 MHz. The stm32 PWM driver runs the counter at
+ * clk / (st,prescaler + 1), so 95 -> 1 MHz tick. A 20 ms frame is then
+ * 20000 counts, well inside the 16-bit timer. Without the prescaler the
+ * longest period would be ~682 us and pwm_set_dt() for 20 ms would fail.
+ */
+&timers3 {
+	status = "okay";
+	st,prescaler = <95>;
+
+	pwm3: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim3_ch1_pb4>;   /* servo1 */
+		pinctrl-names = "default";
+	};
+};
+
+/* servo2 on a separate timer, same 1 MHz tick / 20 ms frame. */
+&timers4 {
+	status = "okay";
+	st,prescaler = <95>;
+
+	pwm4: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim4_ch1_pb6>;   /* servo2 / Arduino D10 */
+		pinctrl-names = "default";
+	};
+};
+
+/*
+ * The board DTS enables USART1 on PB6/PB7, which collides with servo2's
+ * TIM4_CH1 on PB6. Nothing here uses USART1 (the console is USART2), so
+ * release the pins.
+ */
+&usart1 {
+	status = "disabled";
+};
+
+&i2c1 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	ssd1306: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		prechargep = <0x22>;
+		status = "okay";
+	};
+};
+
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;   /* 100 kHz — the MPU6050 wiring is not fast-mode clean */
+
+	mpu: mpu6050@68 {
+		compatible = "invensense,mpu6050";
+		reg = <0x68>;
+		status = "okay";
+	};
+};
+
+/*
+ * Photoresistor at the goal. LDR + a fixed resistor (~10k) form a divider
+ * into PA0. A long acquisition time helps because the LDR's source
+ * impedance is high; tune the thresholds in goal.c from the logged counts.
+ */
+&adc1 {
+	status = "okay";
+	pinctrl-0 = <&adc1_in0_pa0>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	/* APB2 is 96 MHz here; the F411 ADC tops out at 36 MHz, so /4 (24 MHz).
+	 * /2 would be 48 MHz and out of spec. */
+	st,adc-prescaler = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/*
+ * High-score storage for the settings backend (ZMS).
+ *
+ * The STM32F411RE has non-uniform flash sectors (4x16K, 1x64K, 3x128K).
+ * NVS can't be used here: its settings backend stores the sector size in a
+ * uint16_t and 128 KB (or even 64 KB) overflows it. ZMS uses a uint32_t, so
+ * this carves the top two 128 KB sectors (ZMS needs >= 2). That leaves
+ * 256 KB for the application image, far more than this build needs.
+ *
+ * No MCUboot here, so the linker still believes it owns all 512 KB; keep an
+ * eye on image size if the app ever grows past 0x40000.
+ */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		storage_partition: partition@40000 {
+			label = "storage";
+			reg = <0x00040000 0x00040000>;
+		};
+	};
+};
