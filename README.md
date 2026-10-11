@@ -144,6 +144,7 @@ Open a serial terminal on the ST-LINK virtual COM port (USART2) to see logs such
 - Store more scores or add difficulty levels / different mazes.
 - Add sound feedback (buzzer) on goal or new record.
 - Wire the MPU6050 interrupt pin and use trigger mode instead of polling.
+- Design PCB for this project
 
 ## 10. Conclusion
 
